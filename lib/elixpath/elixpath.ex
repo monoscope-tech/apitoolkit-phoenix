@@ -130,6 +130,20 @@ defmodule Elixpath do
   @spec do_update(term, t, any) :: term
   defp do_update(data, %Elixpath{path: []}, _opts), do: data
 
+  defp do_update(data, %Elixpath{path: [PathComponent.descendant(key) | rest]} = path, update_val)
+       when is_map(data) or is_list(data) do
+    direct =
+      if is_map(data),
+        do: do_update(data, %{path | path: [PathComponent.child(key) | rest]}, update_val),
+        else: data
+
+    if is_map(direct),
+      do: Map.new(direct, fn {k, v} -> {k, do_update(v, path, update_val)} end),
+      else: Enum.map(direct, &do_update(&1, path, update_val))
+  end
+
+  defp do_update(data, %Elixpath{path: [PathComponent.descendant(_) | _]}, _), do: data
+
   defp do_update(data, %Elixpath{path: [PathComponent.child(key)]}, update_val) do
     Elixpath.Update.update(data, key, update_val)
   end
