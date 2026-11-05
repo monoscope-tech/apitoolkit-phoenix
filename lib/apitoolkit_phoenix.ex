@@ -178,29 +178,55 @@ defmodule ApitoolkitPhoenix do
     }
   end
 
+  @always_redacted_headers ~w(authorization cookie set-cookie proxy-authorization)
+
+  @doc """
+  Redacts the given header names, plus #{inspect(@always_redacted_headers)}, case-insensitively.
+
+      iex> ApitoolkitPhoenix.redact_headers(
+      ...>   [{"Authorization", "Bearer abc"}, {"cookie", "s=1"}, {"Set-Cookie", "s=2"},
+      ...>    {"proxy-authorization", "Basic x"}, {"x-api-key", "k"}, {"accept", "*/*"}],
+      ...>   ["X-Api-Key"]
+      ...> )
+      %{"Authorization" => "[CLIENT_REDACTED]", "cookie" => "[CLIENT_REDACTED]",
+        "Set-Cookie" => "[CLIENT_REDACTED]", "proxy-authorization" => "[CLIENT_REDACTED]",
+        "x-api-key" => "[CLIENT_REDACTED]", "accept" => "*/*"}
+  """
   def redact_headers(headers, headers_to_redact) do
-    headers_to_redact_lowercase = headers_to_redact |> Enum.map(&String.downcase/1)
+    redact = Enum.map(headers_to_redact, &String.downcase/1) ++ @always_redacted_headers
 
-    Enum.reduce(headers, %{}, fn {key, value}, acc ->
-      lower_key = String.downcase(key)
-
-      is_redact_key =
-        Enum.member?(headers_to_redact_lowercase, lower_key) || lower_key == "cookie"
-
-      new_header = if is_redact_key, do: "[CLIENT_REDACTED]", else: value
-      Map.put(acc, key, new_header)
+    Map.new(headers, fn {key, value} ->
+      {key, if(String.downcase(key) in redact, do: "[CLIENT_REDACTED]", else: value)}
     end)
   end
 
+  @doc """
+  Replaces every JSONPath match with "[CLIENT_REDACTED]". A path that cannot be
+  applied is logged and skipped; it never undoes the other paths.
+
+      iex> ApitoolkitPhoenix.redact_fields(
+      ...>   %{"token" => "t", "user" => %{"password" => "p", "cards" => [%{"password" => "q"}]}},
+      ...>   ["$[bad", "$.token", "$..password"]
+      ...> )
+      %{"token" => "[CLIENT_REDACTED]",
+        "user" => %{"password" => "[CLIENT_REDACTED]", "cards" => [%{"password" => "[CLIENT_REDACTED]"}]}}
+  """
   def redact_fields(data, fields_to_redact) do
-    try do
-      Enum.reduce(fields_to_redact, data, fn field, acc_data ->
-        Elixpath.update(acc_data, field, "[CLIENT_REDACTED]")
-      end)
-    rescue
-      _err ->
-        data
-    end
+    Enum.reduce(fields_to_redact, data, fn field, acc ->
+      try do
+        case Elixpath.update(acc, field, "[CLIENT_REDACTED]") do
+          {:error, reason} -> raise ArgumentError, inspect(reason)
+          updated -> updated
+        end
+      rescue
+        err ->
+          Logger.warning(
+            "apitoolkit: could not redact #{inspect(field)}: #{Exception.message(err)}"
+          )
+
+          acc
+      end
+    end)
   end
 
   def report_error(conn, err) do
